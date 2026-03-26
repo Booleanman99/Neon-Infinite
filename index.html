@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEON DRIFT — Infinite Cyberpunk City</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏎️</text></svg>">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { overflow:hidden; background:#040410; font-family:'Share Tech Mono',monospace; color:#fff; }
+    canvas { display:block; width:100vw; height:100vh; }
+
+    /* ── UI LAYER ── */
+    #ui { position:fixed; inset:0; pointer-events:none; z-index:10; }
+    #ui > * { pointer-events:auto; }
+
+    /* ── START SCREEN ── */
+    #start-screen {
+      position:absolute; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      background:radial-gradient(ellipse at 50% 60%,rgba(0,255,255,0.03),rgba(4,4,16,0.94) 60%);
+      z-index:50; transition:opacity 0.6s;
+    }
+    #start-screen.hidden { opacity:0; pointer-events:none; }
+    #start-screen h1 {
+      font-size:clamp(28px,7vw,72px); font-weight:200; letter-spacing:0.5em;
+      color:#0ff; text-shadow:0 0 40px #0ff4,0 0 80px #0ff2; text-transform:uppercase;
+    }
+    #start-screen .sub {
+      font-size:clamp(9px,1.4vw,12px); letter-spacing:0.6em;
+      color:#f066; text-transform:uppercase; margin-top:4px; margin-bottom:52px;
+    }
+    .btn-main {
+      background:transparent; border:1px solid #0ff3; color:#0ff;
+      padding:14px 56px; font-size:clamp(10px,1.3vw,13px); letter-spacing:0.35em;
+      cursor:pointer; text-transform:uppercase; font-family:inherit;
+      box-shadow:0 0 28px #0ff1,inset 0 0 28px #0ff06; outline:none; transition:all 0.3s;
+    }
+    .btn-main:hover { background:#0ff08; border-color:#0ff8; }
+    #start-screen .hint {
+      margin-top:46px; font-size:clamp(8px,1vw,10px); color:#fff2;
+      letter-spacing:0.18em; text-align:center; line-height:2.4;
+    }
+
+    /* ── CRASH SCREEN ── */
+    #crash-screen {
+      position:absolute; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      background:radial-gradient(ellipse at center,rgba(40,0,10,0.5),rgba(4,4,16,0.88) 60%);
+      z-index:50; transition:opacity 0.4s; opacity:0; pointer-events:none;
+    }
+    #crash-screen.show { opacity:1; pointer-events:auto; }
+    #crash-screen h2 {
+      font-size:clamp(22px,5vw,48px); font-weight:200; letter-spacing:0.35em;
+      color:#f06; text-shadow:0 0 35px #f066; text-transform:uppercase; margin-bottom:10px;
+    }
+    #crash-screen .score-final {
+      font-size:clamp(13px,2vw,20px); color:#fff5; letter-spacing:0.2em; margin-bottom:38px;
+    }
+    .btn-retry {
+      background:transparent; border:1px solid #f064; color:#f06;
+      padding:12px 44px; font-size:clamp(10px,1.3vw,12px); letter-spacing:0.3em;
+      cursor:pointer; text-transform:uppercase; font-family:inherit; outline:none;
+      box-shadow:0 0 20px #f061; transition:all 0.3s;
+    }
+    .btn-retry:hover { background:#f060a; }
+
+    /* ── HUD ── */
+    #hud { position:absolute; inset:0; opacity:0; transition:opacity 0.4s; pointer-events:none; }
+    #hud.show { opacity:1; }
+    #hud > * { pointer-events:auto; }
+
+    #speed-display {
+      position:absolute; bottom:28px; left:28px;
+      display:flex; align-items:flex-end; gap:5px;
+    }
+    #speed-val {
+      font-size:clamp(38px,8vw,80px); font-weight:200; line-height:1;
+      text-shadow:0 0 25px #0ff1e; letter-spacing:-0.02em;
+    }
+    #speed-unit {
+      font-size:clamp(8px,1vw,11px); color:#fff3; letter-spacing:0.15em;
+      margin-bottom:clamp(7px,1.2vw,14px); text-transform:uppercase;
+    }
+
+    #score-display { position:absolute; bottom:28px; right:28px; text-align:right; }
+    #score-label { font-size:9px; color:#fff2; letter-spacing:0.3em; text-transform:uppercase; margin-bottom:3px; }
+    #score-val { font-size:clamp(20px,3.5vw,38px); font-weight:200; text-shadow:0 0 18px #f062; }
+
+    #speed-bar {
+      position:absolute; bottom:0; left:0; right:0; height:3px; background:#fff06;
+    }
+    #speed-bar-fill {
+      height:100%; width:0%; transition:width 0.1s;
+      background:linear-gradient(90deg,#0ff3,#0ff); box-shadow:0 0 10px #0ff4;
+    }
+    #speed-bar-fill.hot { background:linear-gradient(90deg,#0ff,#f06); }
+
+    /* ── TOP CONTROLS ── */
+    #top-controls {
+      position:absolute; top:18px; right:18px; display:flex; gap:8px; align-items:center;
+    }
+    .btn-circle {
+      width:34px; height:34px; border-radius:50%; background:#fff05;
+      border:1px solid #fff10; color:#fff5; font-size:12px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      backdrop-filter:blur(8px); transition:all 0.2s; outline:none; font-family:inherit;
+    }
+    .btn-circle:hover { background:#fff12; border-color:#fff3; }
+
+    #auto-btn {
+      width:auto; border-radius:14px; padding:0 14px; font-size:9px;
+      letter-spacing:0.18em; text-transform:uppercase;
+    }
+    #auto-btn.on { border-color:#0f9; color:#0f9; background:#0f908; }
+
+    #autopilot-badge {
+      position:absolute; top:18px; left:50%; transform:translateX(-50%);
+      font-size:10px; letter-spacing:0.3em; color:#0f955; text-transform:uppercase;
+      border:1px solid #0f918; padding:5px 18px; border-radius:2px;
+      display:none;
+    }
+    #autopilot-badge.show { display:block; }
+
+    /* ── OVERLAY PANELS ── */
+    .overlay {
+      position:absolute; inset:0; z-index:40; background:rgba(4,4,16,0.7);
+      backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center;
+      opacity:0; pointer-events:none; transition:opacity 0.25s;
+    }
+    .overlay.show { opacity:1; pointer-events:auto; }
+    .panel {
+      background:rgba(10,10,22,0.96); border:1px solid #fff0c;
+      border-radius:4px; padding:28px 32px; min-width:280px;
+      box-shadow:0 0 60px #0ff03;
+    }
+    .panel-title {
+      font-size:11px; letter-spacing:0.4em; text-transform:uppercase;
+      color:#fff35; margin-bottom:24px; text-align:center;
+    }
+    .ctrl-row {
+      display:flex; justify-content:space-between; padding:7px 0;
+      border-bottom:1px solid #fff06;
+    }
+    .ctrl-key { font-size:11px; color:#0ff; letter-spacing:0.1em; }
+    .ctrl-desc { font-size:10px; color:#fff4; letter-spacing:0.15em; text-transform:uppercase; }
+
+    .setting-group { margin-bottom:22px; }
+    .setting-label {
+      display:flex; justify-content:space-between; font-size:10px;
+      letter-spacing:0.25em; color:#fff35; text-transform:uppercase; margin-bottom:10px;
+    }
+    .setting-value { color:#0ff5; }
+
+    input[type=range] {
+      width:100%; accent-color:#0ff; cursor:pointer; margin-bottom:4px;
+    }
+    .range-labels {
+      display:flex; justify-content:space-between; font-size:8px;
+      color:#fff15; letter-spacing:0.15em; text-transform:uppercase;
+    }
+
+    .chip-group { display:flex; gap:6px; flex-wrap:wrap; }
+    .chip {
+      background:transparent; border:1px solid #fff15; color:#fff44;
+      padding:7px 15px; font-size:10px; letter-spacing:0.22em;
+      text-transform:uppercase; cursor:pointer; border-radius:2px;
+      transition:all 0.2s; font-family:inherit; outline:none;
+    }
+    .chip.active-cyan { border-color:#0ff; color:#0ff; background:#0ff11; }
+    .chip.active-pink { border-color:#f06; color:#f06; background:#f0611; }
+    .chip.active-green { border-color:#0f9; color:#0f9; background:#0f911; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <!-- START -->
+    <div id="start-screen">
+      <h1>NEON DRIFT</h1>
+      <div class="sub">infinite cyberpunk city</div>
+      <button class="btn-main" id="start-btn">begin</button>
+      <div class="hint">W/↑ accelerate · S/↓ brake · A·D/←→ steer · SHIFT boost</div>
+    </div>
+
+    <!-- CRASH -->
+    <div id="crash-screen">
+      <h2>wrecked</h2>
+      <div class="score-final"><span id="final-score">0</span> pts</div>
+      <button class="btn-retry" id="retry-btn">retry</button>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div id="speed-display">
+        <span id="speed-val">0</span>
+        <span id="speed-unit">km/h</span>
+      </div>
+      <div id="score-display">
+        <div id="score-label">score</div>
+        <div id="score-val">0</div>
+      </div>
+      <div id="speed-bar"><div id="speed-bar-fill"></div></div>
+      <div id="top-controls">
+        <button class="btn-circle" id="auto-btn">auto: off</button>
+        <button class="btn-circle" id="help-btn">?</button>
+        <button class="btn-circle" id="settings-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+        </button>
+      </div>
+      <div id="autopilot-badge">autopilot</div>
+    </div>
+
+    <!-- HELP OVERLAY -->
+    <div class="overlay" id="help-overlay">
+      <div class="panel">
+        <div class="panel-title">controls</div>
+        <div class="ctrl-row"><span class="ctrl-key">W / ↑</span><span class="ctrl-desc">accelerate</span></div>
+        <div class="ctrl-row"><span class="ctrl-key">S / ↓</span><span class="ctrl-desc">brake</span></div>
+        <div class="ctrl-row"><span class="ctrl-key">A / ←</span><span class="ctrl-desc">steer left</span></div>
+        <div class="ctrl-row"><span class="ctrl-key">D / →</span><span class="ctrl-desc">steer right</span></div>
+        <div class="ctrl-row"><span class="ctrl-key">SHIFT / SPACE</span><span class="ctrl-desc">boost</span></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS OVERLAY -->
+    <div class="overlay" id="settings-overlay">
+      <div class="panel" style="min-width:min(360px,88vw)">
+        <div class="panel-title">environment</div>
+        <div class="setting-group">
+          <div class="setting-label"><span>traffic density</span><span class="setting-value" id="traffic-val">55%</span></div>
+          <input type="range" min="0" max="1" step="0.05" value="0.55" id="traffic-slider">
+          <div class="range-labels"><span>empty</span><span>gridlock</span></div>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label"><span>weather</span></div>
+          <div class="chip-group" id="weather-chips"></div>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label"><span>time of day</span></div>
+          <div class="chip-group" id="tod-chips"></div>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label"><span>autopilot</span></div>
+          <div class="chip-group" id="auto-chips"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
