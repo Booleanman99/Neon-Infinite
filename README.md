@@ -1,19 +1,19 @@
 # NEON DRIFT
 
-Infinite cyberpunk city driving game built with Three.js.
-
-![Neon Drift](https://img.shields.io/badge/NEON-DRIFT-00ffff?style=for-the-badge&labelColor=040410)
+Infinite cyberpunk city driving game built with **Babylon.js** — featuring real-time bloom, glow layers, PBR materials, and particle-based weather.
 
 ## Features
 
-- **Infinite procedural city** — neon-lit buildings with window grids, signs, billboards, and storefronts regenerate endlessly
-- **Crisp car models** — multi-layer body, windshields, DRL headlights, neon underglow, taillights, wheel glow rings
-- **6-lane traffic** — oncoming and same-direction vehicles with full collision detection
-- **Autopilot mode** — AI drives center-lane and dodges traffic automatically
-- **Weather system** — clear, rain (particle system), fog, storm
-- **Time of day** — night, dawn, sunset, day with distinct lighting
-- **Traffic density slider** — from empty roads to gridlock
-- **Slow Roads-inspired UI** — minimal, clean HUD with speed, score, and speed bar
+- **Babylon.js engine** with GlowLayer, DefaultRenderingPipeline (bloom, chromatic aberration, ACES tonemapping, vignette, FXAA)
+- **PBR materials** for reflective wet roads, metallic car paint, glass
+- **Infinite procedural city** with neon-lit buildings, window grids, signs, billboards, storefronts
+- **Crisp car models** with underglow, DRL strips, taillights, wheel glow rings
+- **6-lane traffic** with full collision detection
+- **Autopilot mode** with AI obstacle avoidance
+- **Particle-based rain** system
+- **Weather**: clear, rain, fog, storm
+- **Time of day**: night, dawn, sunset, day
+- **Traffic density slider**
 
 ## Controls
 
@@ -23,16 +23,11 @@ Infinite cyberpunk city driving game built with Three.js.
 | S / ↓ | Brake |
 | A / ← | Steer left |
 | D / → | Steer right |
-| SHIFT / SPACE | Boost |
+| SHIFT | Boost |
 
-## Deploy to Vercel
+## Deploy
 
-```bash
-npm install
-npm run build
-```
-
-Or just connect this repo to [Vercel](https://vercel.com) and it auto-deploys.
+Connect this repo to [Vercel](https://vercel.com) — it auto-detects Vite.
 
 ## Dev
 
@@ -41,8 +36,8 @@ npm install
 npm run dev
 ```
 
-## Tech
+## Build
 
-- [Three.js](https://threejs.org/) — 3D rendering
-- [Vite](https://vitejs.dev/) — build tool
-- Vanilla JS — no framework overhead
+```bash
+npm run build
+```

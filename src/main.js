@@ -1,151 +1,303 @@
-import * as THREE from 'three';
+const B = window.BABYLON;
 
-// ═══════════════════════ CONFIG ═══════════════════════
-const LANE_W = 3.2;
-const LANES = 6;
-const ROAD_W = LANE_W * LANES;
-const CHUNK = 80;
-const NCHUNKS = 14;
-const WLEN = CHUNK * NCHUNKS;
-const MSPD = 185;
-const ACC = 44;
-const BRK = 58;
-const DRG = 8;
-const STR = 4.5;
-const MTRAF = 44;
-const RC = 4500; // rain particle count
+// ═══════════════════ CONFIG ═══════════════════
+const LW = 3.2, LN = 6, RW = LW * LN;
+const CK = 80, NCK = 14, WL = CK * NCK;
+const MSPD = 190, ACC = 46, BRK = 60, DRG = 8.5, STF = 4.5;
+const MTRAF = 42;
 
-const NC = {
-  pk: 0xff0066, cy: 0x00ffff, pu: 0xbb44ff, bl: 0x2266ff,
-  gn: 0x00ff99, yl: 0xffee00, or: 0xff7700, rd: 0xff2233,
-  mg: 0xff00bb, tl: 0x00ddaa
-};
-const NCS = Object.values(NC);
-const rn = () => NCS[(Math.random() * NCS.length) | 0];
+// Neon palette
+const NP = [
+  new B.Color3(1, 0, 0.4),     // pink
+  new B.Color3(0, 1, 1),       // cyan
+  new B.Color3(0.73, 0.27, 1), // purple
+  new B.Color3(0.13, 0.4, 1),  // blue
+  new B.Color3(0, 1, 0.6),     // green
+  new B.Color3(1, 0.93, 0),    // yellow
+  new B.Color3(1, 0.47, 0),    // orange
+  new B.Color3(1, 0.13, 0.2),  // red
+  new B.Color3(1, 0, 0.73),    // magenta
+];
+const rn = () => NP[(Math.random() * NP.length) | 0];
 const ri = (a, b) => a + Math.random() * (b - a);
+const ri2 = (a, b) => (ri(a, b)) | 0;
 
-// ═══════════════════════ HELPERS ═══════════════════════
-function mat(c) {
-  return new THREE.MeshStandardMaterial({ color: c, metalness: 0.85, roughness: 0.2 });
+// ═══════════════════ STATE ═══════════════════
+const S = { spd: 0, px: 0, dist: 0, sc: 0, alive: true, started: false, shk: 0, str: 0, spT: 0 };
+const cfg = { traffic: 0.55, weather: 'clear', tod: 'night', auto: false };
+const keys = {};
+
+// ═══════════════════ DOM ═══════════════════
+const $ = id => document.getElementById(id);
+const startScr = $('start-screen'), crashScr = $('crash-screen'), hud = $('hud');
+const spdNum = $('spd-num'), scNum = $('sc-num'), fsEl = $('fs');
+const spdFill = $('spd-fill'), autoBtn = $('abtn'), apBadge = $('ap-badge');
+
+function mkChips(id, opts, key, cls) {
+  const c = $(id); c.innerHTML = '';
+  opts.forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (cfg[key] === o ? ' ' + cls : '');
+    b.textContent = o;
+    b.onclick = () => { cfg[key] = o; mkChips(id, opts, key, cls); updAuto(); };
+    c.appendChild(b);
+  });
 }
-function glow(c, o) {
-  return new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: o !== undefined ? o : 0.85 });
+function updAuto() {
+  autoBtn.textContent = cfg.auto ? 'auto: on' : 'auto: off';
+  autoBtn.classList.toggle('auto-on', cfg.auto);
+  apBadge.classList.toggle('show', cfg.auto && S.alive && S.started);
 }
-function addAt(parent, geo, material, x, y, z) {
-  const m = new THREE.Mesh(geo, material);
-  m.position.set(x, y, z);
-  parent.add(m);
+function openSettings() {
+  mkChips('wc', ['clear', 'rain', 'fog', 'storm'], 'weather', 'ac');
+  mkChips('tc', ['night', 'dawn', 'sunset', 'day'], 'tod', 'ap');
+  // auto chips (boolean special case)
+  const ac = $('apc'); ac.innerHTML = '';
+  ['off', 'on'].forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (cfg.auto === (o === 'on') ? ' ag' : '');
+    b.textContent = o;
+    b.onclick = () => { cfg.auto = o === 'on'; updAuto(); openSettings(); };
+    ac.appendChild(b);
+  });
+  $('sov').classList.add('show');
+}
+
+$('go').onclick = startGame;
+$('re').onclick = startGame;
+autoBtn.onclick = () => { cfg.auto = !cfg.auto; updAuto(); };
+$('hbtn').onclick = () => $('hov').classList.toggle('show');
+$('sbtn').onclick = openSettings;
+$('hov').onclick = e => { if (e.target === $('hov')) $('hov').classList.remove('show'); };
+$('sov').onclick = e => { if (e.target === $('sov')) $('sov').classList.remove('show'); };
+$('tsl').oninput = e => { cfg.traffic = +e.target.value; $('tv').textContent = Math.round(cfg.traffic * 100) + '%'; };
+window.onkeydown = e => {
+  keys[e.key.toLowerCase()] = true;
+  if ('wasdarrowuparrowdownarrowleftarrowright '.includes(e.key.toLowerCase())) e.preventDefault();
+};
+window.onkeyup = e => { keys[e.key.toLowerCase()] = false; };
+
+function startGame() {
+  S.spd = 0; S.px = 0; S.dist = 0; S.sc = 0; S.alive = true; S.started = true;
+  S.shk = 0; S.str = 0; S.spT = 0;
+  trafficPool.forEach(t => { t.root.setEnabled(false); t.active = false; });
+  startScr.classList.add('hidden');
+  crashScr.classList.remove('show');
+  hud.classList.add('show');
+  updAuto();
+}
+function doCrash() {
+  S.alive = false; S.shk = 1.0;
+  fsEl.textContent = Math.floor(S.sc).toLocaleString();
+  crashScr.classList.add('show');
+  apBadge.classList.remove('show');
+}
+
+// ═══════════════════ BABYLON SETUP ═══════════════════
+const canvas = $('c');
+const engine = new B.Engine(canvas, true, { stencil: true });
+engine.setHardwareScalingLevel(1 / Math.min(devicePixelRatio, 1.5));
+const scene = new B.Scene(engine);
+scene.clearColor = new B.Color4(0.016, 0.012, 0.03, 1);
+scene.fogMode = B.Scene.FOGMODE_EXP2;
+scene.fogDensity = 0.006;
+scene.fogColor = new B.Color3(0.016, 0.012, 0.03);
+scene.ambientColor = new B.Color3(0.08, 0.07, 0.12);
+
+// Camera
+const cam = new B.FreeCamera('cam', new B.Vector3(0, 4, 12), scene);
+cam.minZ = 0.5; cam.maxZ = 600; cam.fov = 1.15;
+
+// Lights
+const hemi = new B.HemisphericLight('hemi', new B.Vector3(0, 1, -0.3), scene);
+hemi.intensity = 0.35;
+hemi.diffuse = new B.Color3(0.15, 0.13, 0.25);
+hemi.groundColor = new B.Color3(0.05, 0.04, 0.1);
+
+const dirL = new B.DirectionalLight('dir', new B.Vector3(-0.5, -1, -1), scene);
+dirL.intensity = 0.2;
+dirL.diffuse = new B.Color3(0.3, 0.3, 0.5);
+
+// ═══════════════════ POST-PROCESSING ═══════════════════
+const glow = new B.GlowLayer('glow', scene, { mainTextureSamples: 4, blurKernelSize: 48 });
+glow.intensity = 0.9;
+
+const pp = new B.DefaultRenderingPipeline('pp', true, scene, [cam]);
+pp.bloomEnabled = true;
+pp.bloomThreshold = 0.25;
+pp.bloomWeight = 0.6;
+pp.bloomKernel = 64;
+pp.bloomScale = 0.5;
+pp.chromaticAberrationEnabled = true;
+pp.chromaticAberration.aberrationAmount = 15;
+pp.chromaticAberration.radialIntensity = 0.8;
+pp.fxaaEnabled = true;
+pp.imageProcessing.toneMappingEnabled = true;
+pp.imageProcessing.toneMappingType = B.ImageProcessingConfiguration.TONEMAPPING_ACES;
+pp.imageProcessing.contrast = 1.3;
+pp.imageProcessing.exposure = 1.0;
+pp.imageProcessing.vignetteEnabled = true;
+pp.imageProcessing.vignetteWeight = 2.5;
+pp.imageProcessing.vignetteColor = new B.Color4(0.02, 0.01, 0.06, 0);
+
+// ═══════════════════ MATERIALS ═══════════════════
+function matPBR(name, color, metal, rough) {
+  const m = new B.PBRMaterial(name, scene);
+  m.albedoColor = new B.Color3(...color);
+  m.metallic = metal; m.roughness = rough;
+  m.environmentIntensity = 0.3;
+  return m;
+}
+function matGlow(name, color, intensity) {
+  const m = new B.StandardMaterial(name, scene);
+  m.emissiveColor = color.clone();
+  m.disableLighting = true;
+  m.alpha = intensity !== undefined ? intensity : 1;
   return m;
 }
 
-// ═══════════════════════ CAR BUILDER ═══════════════════════
-function buildCar(isPlayer) {
-  const g = new THREE.Group();
-  const neon = isPlayer ? NC.cy : rn();
-  const paint = isPlayer ? 0x08080f : [0x10102a, 0x1a0a28, 0x0a1a28, 0x18101a, 0x0a1818][(Math.random() * 5) | 0];
+const roadMat = matPBR('road', [0.06, 0.06, 0.1], 0.3, 0.5);
+const roadWetMat = matPBR('roadWet', [0.07, 0.07, 0.12], 0.85, 0.05);
+roadWetMat.alpha = 0.12; roadWetMat.transparencyMode = 2;
+const groundMat = matPBR('ground', [0.025, 0.02, 0.06], 0.1, 0.95);
 
-  // chassis layers
-  addAt(g, new THREE.BoxGeometry(2.05, 0.18, 4.5), mat(0x050508), 0, 0.12, 0);
-  addAt(g, new THREE.BoxGeometry(2.0, 0.5, 4.4), mat(paint), 0, 0.45, 0);
-  addAt(g, new THREE.BoxGeometry(1.88, 0.22, 4.2), mat(paint), 0, 0.82, 0);
+const edgeMat = matGlow('edge', new B.Color3(0, 1, 1), 0.9);
+const edgeGlowMat = matGlow('edgeG', new B.Color3(0, 1, 1), 0.06);
+const centerMat = matGlow('center', new B.Color3(1, 0.93, 0), 0.7);
+const centerGlowMat = matGlow('centerG', new B.Color3(1, 0.93, 0), 0.04);
+const dashMat = matGlow('dash', new B.Color3(0.33, 0.4, 0.47), 0.3);
 
-  // cabin
-  const cabMat = new THREE.MeshStandardMaterial({
-    color: 0x0a0a20, metalness: 0.7, roughness: 0.05, transparent: true, opacity: 0.45
-  });
-  addAt(g, new THREE.BoxGeometry(1.58, 0.42, 1.7), cabMat, 0, 1.14, -0.05);
+// ═══════════════════ GROUND ═══════════════════
+const gnd = B.MeshBuilder.CreatePlane('gnd', { width: 600, height: 4000 }, scene);
+gnd.rotation.x = Math.PI / 2; gnd.position.y = -0.05; gnd.material = groundMat;
+
+// ═══════════════════ CAR BUILDER ═══════════════════
+function buildCar(isP) {
+  const root = new B.TransformNode('car', scene);
+  const neon = isP ? new B.Color3(0, 1, 1) : rn();
+  const paintC = isP ? [0.03, 0.03, 0.06] : [[0.06, 0.06, 0.15], [0.1, 0.04, 0.15], [0.04, 0.1, 0.15], [0.09, 0.05, 0.1], [0.04, 0.1, 0.1]][ri2(0, 5)];
+  const paintMat = matPBR('paint' + Math.random(), paintC, 0.88, 0.15);
+  const darkMat = matPBR('dark' + Math.random(), [0.02, 0.02, 0.03], 0.9, 0.5);
+
+  // chassis
+  const ch = B.MeshBuilder.CreateBox('ch', { width: 2.05, height: 0.18, depth: 4.5 }, scene);
+  ch.position.y = 0.12; ch.material = darkMat; ch.parent = root;
+
+  // lower body
+  const lb = B.MeshBuilder.CreateBox('lb', { width: 2.0, height: 0.52, depth: 4.4 }, scene);
+  lb.position.y = 0.46; lb.material = paintMat; lb.parent = root;
+
+  // upper body
+  const ub = B.MeshBuilder.CreateBox('ub', { width: 1.88, height: 0.22, depth: 4.2 }, scene);
+  ub.position.y = 0.83; ub.material = paintMat; ub.parent = root;
+
+  // cabin glass
+  const glassMat = matPBR('glass' + Math.random(), [0.04, 0.04, 0.12], 0.95, 0.02);
+  glassMat.alpha = 0.4; glassMat.transparencyMode = 2;
+  const cab = B.MeshBuilder.CreateBox('cab', { width: 1.56, height: 0.44, depth: 1.72 }, scene);
+  cab.position.set(0, 1.15, 0.05); cab.material = glassMat; cab.parent = root;
 
   // windshields
-  const wsMat = new THREE.MeshStandardMaterial({
-    color: 0x1122aa, metalness: 0.9, roughness: 0.02,
-    transparent: true, opacity: 0.35, side: THREE.DoubleSide
-  });
-  const wf = addAt(g, new THREE.PlaneGeometry(1.5, 0.5), wsMat, 0, 1.12, -0.95);
-  wf.rotation.x = 0.5;
-  const wr = addAt(g, new THREE.PlaneGeometry(1.5, 0.5), wsMat.clone(), 0, 1.12, 0.8);
-  wr.rotation.x = -0.45;
+  const wsf = B.MeshBuilder.CreatePlane('wsf', { width: 1.48, height: 0.52 }, scene);
+  wsf.position.set(0, 1.12, -0.97); wsf.rotation.x = -0.52; wsf.material = glassMat; wsf.parent = root;
+  const wsr = B.MeshBuilder.CreatePlane('wsr', { width: 1.48, height: 0.5 }, scene);
+  wsr.position.set(0, 1.12, 0.95); wsr.rotation.x = 0.45; wsr.material = glassMat; wsr.parent = root;
 
-  // body lines
-  [-0.6, 0.6].forEach(x => {
-    addAt(g, new THREE.BoxGeometry(0.04, 0.04, 3.8), glow(neon, 0.35), x, 0.72, 0);
+  // body accent lines
+  const lineMat = matGlow('ln' + Math.random(), neon, 0.5);
+  [-0.62, 0.62].forEach(x => {
+    const ln = B.MeshBuilder.CreateBox('ln', { width: 0.04, height: 0.04, depth: 3.8 }, scene);
+    ln.position.set(x, 0.73, 0); ln.material = lineMat; ln.parent = root;
   });
 
   // hood scoop
-  addAt(g, new THREE.BoxGeometry(0.4, 0.06, 1.2), mat(0x111118), 0, 0.74, -1.4);
+  const sc = B.MeshBuilder.CreateBox('sc', { width: 0.42, height: 0.06, depth: 1.2 }, scene);
+  sc.position.set(0, 0.75, -1.3); sc.material = darkMat; sc.parent = root;
 
   // wheels
-  const wGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.22, 12);
-  const wMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, metalness: 0.5, roughness: 0.7 });
-  const tGeo = new THREE.TorusGeometry(0.34, 0.02, 6, 16);
   [[-0.98, 0.34, -1.35], [0.98, 0.34, -1.35], [-0.98, 0.34, 1.35], [0.98, 0.34, 1.35]].forEach(p => {
-    const w = addAt(g, wGeo, wMat, p[0], p[1], p[2]);
-    w.rotation.z = Math.PI / 2;
-    const t = addAt(g, tGeo, glow(neon, 0.22), p[0] > 0 ? p[0] + 0.12 : p[0] - 0.12, p[1], p[2]);
-    t.rotation.y = Math.PI / 2;
+    const w = B.MeshBuilder.CreateCylinder('w', { diameter: 0.68, height: 0.22, tessellation: 16 }, scene);
+    w.rotation.z = Math.PI / 2; w.position.set(p[0], p[1], p[2]);
+    w.material = darkMat; w.parent = root;
+    const rg = B.MeshBuilder.CreateTorus('rg', { diameter: 0.68, thickness: 0.04, tessellation: 20 }, scene);
+    rg.rotation.z = Math.PI / 2;
+    rg.position.set(p[0] > 0 ? p[0] + 0.12 : p[0] - 0.12, p[1], p[2]);
+    rg.material = matGlow('rgm' + Math.random(), neon, 0.35); rg.parent = root;
   });
 
-  // headlights + DRL
+  // headlights
+  const hlMat = matGlow('hl' + Math.random(), new B.Color3(1, 1, 1), 1);
+  const drlMat = matGlow('drl' + Math.random(), neon, 1);
   [-0.7, 0.7].forEach(x => {
-    addAt(g, new THREE.BoxGeometry(0.32, 0.1, 0.05), glow(0xffffff), x, 0.55, -2.23);
-    addAt(g, new THREE.BoxGeometry(0.4, 0.03, 0.04), glow(neon, 0.9), x, 0.5, -2.23);
+    const hl = B.MeshBuilder.CreateBox('hl', { width: 0.32, height: 0.1, depth: 0.05 }, scene);
+    hl.position.set(x, 0.56, -2.23); hl.material = hlMat; hl.parent = root;
+    const drl = B.MeshBuilder.CreateBox('drl', { width: 0.42, height: 0.035, depth: 0.04 }, scene);
+    drl.position.set(x, 0.5, -2.23); drl.material = drlMat; drl.parent = root;
   });
 
-  // player spotlights
-  if (isPlayer) {
+  if (isP) {
     [-0.5, 0.5].forEach(x => {
-      const sl = new THREE.SpotLight(0xeeeeff, 3, 55, 0.5, 0.6);
-      sl.position.set(x, 0.6, -2.3);
-      sl.target.position.set(x, 0, -20);
-      g.add(sl);
-      g.add(sl.target);
+      const sl = new B.SpotLight('sl', new B.Vector3(x, 0.6, -2.4), new B.Vector3(0, -0.1, -1), 0.8, 8, scene);
+      sl.intensity = 3; sl.diffuse = new B.Color3(0.95, 0.95, 1);
+      sl.range = 55; sl.parent = root;
     });
   }
 
   // taillights
+  const tlMat = matGlow('tl' + Math.random(), new B.Color3(1, 0.1, 0.15), 1);
   [-0.65, 0.65].forEach(x => {
-    addAt(g, new THREE.BoxGeometry(0.38, 0.08, 0.05), glow(NC.rd), x, 0.55, 2.23);
-    addAt(g, new THREE.BoxGeometry(0.38, 0.03, 0.04), glow(NC.rd, 0.4), x, 0.62, 2.23);
+    const tl = B.MeshBuilder.CreateBox('tl', { width: 0.38, height: 0.09, depth: 0.05 }, scene);
+    tl.position.set(x, 0.56, 2.23); tl.material = tlMat; tl.parent = root;
   });
-  addAt(g, new THREE.BoxGeometry(1.0, 0.025, 0.04), glow(NC.rd, 0.5), 0, 0.58, 2.23);
+  const tlbar = B.MeshBuilder.CreateBox('tlb', { width: 1.0, height: 0.03, depth: 0.04 }, scene);
+  tlbar.position.set(0, 0.58, 2.23); tlbar.material = matGlow('tlb', new B.Color3(1, 0.1, 0.15), 0.6); tlbar.parent = root;
 
   // underglow
-  const ugp = addAt(g, new THREE.PlaneGeometry(2.2, 4.6), glow(neon, 0.18), 0, 0.04, 0);
-  ugp.rotation.x = -Math.PI / 2;
-  const ugl = new THREE.PointLight(neon, 0.5, 5);
-  ugl.position.set(0, 0.2, 0);
-  g.add(ugl);
+  const ugMat = matGlow('ug' + Math.random(), neon, 0.25);
+  const ug = B.MeshBuilder.CreatePlane('ug', { width: 2.3, height: 4.6 }, scene);
+  ug.rotation.x = Math.PI / 2; ug.position.y = 0.04; ug.material = ugMat; ug.parent = root;
 
-  // spoiler (random on traffic)
-  if (!isPlayer && Math.random() > 0.5) {
-    addAt(g, new THREE.BoxGeometry(1.6, 0.04, 0.25), mat(paint), 0, 1.0, 2.0);
-    [-0.5, 0.5].forEach(x => addAt(g, new THREE.BoxGeometry(0.06, 0.2, 0.06), mat(paint), x, 0.88, 2.0));
+  const ugl = new B.PointLight('ugl', new B.Vector3(0, 0.15, 0), scene);
+  ugl.diffuse = neon.clone(); ugl.intensity = 0.5; ugl.range = 5; ugl.parent = root;
+
+  // spoiler
+  if (!isP && Math.random() > 0.5) {
+    const sp = B.MeshBuilder.CreateBox('sp', { width: 1.6, height: 0.04, depth: 0.25 }, scene);
+    sp.position.set(0, 1.0, 2.0); sp.material = paintMat; sp.parent = root;
+    [-0.5, 0.5].forEach(x => {
+      const lg = B.MeshBuilder.CreateBox('lg', { width: 0.06, height: 0.2, depth: 0.06 }, scene);
+      lg.position.set(x, 0.88, 2.0); lg.material = paintMat; lg.parent = root;
+    });
   }
 
-  return g;
+  return root;
 }
 
-// ═══════════════════════ BUILDING GENERATOR ═══════════════════════
+// ═══════════════════ BUILDING GENERATOR ═══════════════════
+let buildingId = 0;
 function genBuilding(lx, lz, mw, fh) {
-  const g = new THREE.Group();
-  const w = mw || ri(6, 20);
-  const h = fh || ri(15, 85);
-  const d = ri(6, 13);
-  const bc = [0x0b0b18, 0x0d0a1a, 0x0a0d1a, 0x0f0b18, 0x0b0f18][(Math.random() * 5) | 0];
+  const root = new B.TransformNode('bld' + (buildingId++), scene);
+  const w = mw || ri(6, 20), h = fh || ri(15, 85), d = ri(6, 13);
+  const bc = [[0.04, 0.04, 0.09], [0.05, 0.04, 0.1], [0.04, 0.05, 0.1], [0.06, 0.04, 0.09], [0.04, 0.06, 0.09]][ri2(0, 5)];
+  const bMat = matPBR('bm' + buildingId, bc, 0.5, 0.6);
 
-  // main block
-  addAt(g, new THREE.BoxGeometry(w, h, d), mat(bc), lx, h / 2, lz);
+  const main = B.MeshBuilder.CreateBox('bm', { width: w, height: h, depth: d }, scene);
+  main.position.set(lx, h / 2, lz); main.material = bMat; main.parent = root;
 
-  // setback upper
+  // upper setback
   if (h > 35 && Math.random() > 0.4) {
     const sw = w * ri(0.5, 0.8), sh = ri(10, 25);
-    addAt(g, new THREE.BoxGeometry(sw, sh, d * ri(0.5, 0.8)), mat(bc), lx, h + sh / 2, lz);
+    const u = B.MeshBuilder.CreateBox('bu', { width: sw, height: sh, depth: d * ri(0.5, 0.8) }, scene);
+    u.position.set(lx, h + sh / 2, lz); u.material = bMat; u.parent = root;
   }
 
   // antenna
   if (Math.random() > 0.55) {
     const ah = ri(5, 15);
-    addAt(g, new THREE.CylinderGeometry(0.06, 0.06, ah, 5), mat(0x222233), lx, h + ah / 2, lz);
-    addAt(g, new THREE.SphereGeometry(0.16, 5, 5), glow(NC.rd, 0.8), lx, h + ah, lz);
+    const ant = B.MeshBuilder.CreateCylinder('ant', { diameter: 0.12, height: ah, tessellation: 5 }, scene);
+    ant.position.set(lx, h + ah / 2, lz); ant.material = matPBR('antm', [0.1, 0.1, 0.15], 0.4, 0.5); ant.parent = root;
+    const tip = B.MeshBuilder.CreateSphere('tip', { diameter: 0.3, segments: 6 }, scene);
+    tip.position.set(lx, h + ah, lz); tip.material = matGlow('tipm', new B.Color3(1, 0.1, 0.15), 0.9); tip.parent = root;
   }
 
   // window grid
@@ -157,587 +309,412 @@ function genBuilding(lx, lz, mw, fh) {
     for (let c = 0; c < cols; c++) {
       if (Math.random() > 0.3) {
         const lit = Math.random() > 0.25;
-        const wc = lit ? (Math.random() > 0.5 ? nc1 : nc2) : 0x080818;
-        const wo = lit ? ri(0.15, 0.55) : 0.04;
-        addAt(g, new THREE.PlaneGeometry(cw * 0.65, 1.1), glow(wc, wo),
-          lx - w * 0.4 + (c + 0.5) * cw, 3.5 + r * 3.5, lz - d / 2 - 0.06);
+        const wc = lit ? (Math.random() > 0.5 ? nc1 : nc2) : new B.Color3(0.03, 0.03, 0.07);
+        const wo = lit ? ri(0.2, 0.65) : 0.05;
+        const wn = B.MeshBuilder.CreatePlane('wn', { width: cw * 0.62, height: 1.05 }, scene);
+        wn.position.set(lx - w * 0.4 + (c + 0.5) * cw, 3.5 + r * 3.5, lz - d / 2 - 0.06);
+        wn.material = matGlow('wnm' + buildingId + r + c, wc, wo);
+        wn.parent = root;
       }
     }
   }
 
-  // large neon sign
+  // neon sign
   if (Math.random() > 0.3) {
-    const sW = ri(w * 0.25, w * 0.65), sH = ri(1.2, 3.5);
-    const sY = ri(h * 0.25, h * 0.85), sC = rn();
+    const sW = ri(w * 0.25, w * 0.6), sH = ri(1.2, 3.2);
+    const sY = ri(h * 0.25, h * 0.8), sC = rn();
     const sx = lx + (Math.random() - 0.5) * w * 0.3;
-    addAt(g, new THREE.PlaneGeometry(sW, sH), glow(sC, ri(0.5, 0.9)), sx, sY, lz - d / 2 - 0.07);
-    addAt(g, new THREE.PlaneGeometry(sW + 1.5, sH + 1.0), glow(sC, 0.04), sx, sY, lz - d / 2 - 0.06);
+    const sign = B.MeshBuilder.CreatePlane('sg', { width: sW, height: sH }, scene);
+    sign.position.set(sx, sY, lz - d / 2 - 0.07);
+    sign.material = matGlow('sgm' + buildingId, sC, ri(0.6, 1.0));
+    sign.parent = root;
+    // sign glow halo
+    const halo = B.MeshBuilder.CreatePlane('sh', { width: sW + 1.5, height: sH + 1.0 }, scene);
+    halo.position.set(sx, sY, lz - d / 2 - 0.06);
+    halo.material = matGlow('shm' + buildingId, sC, 0.06);
+    halo.parent = root;
+    // sign point light
     if (Math.random() > 0.5) {
-      const pl = new THREE.PointLight(sC, 0.35, 10);
-      pl.position.set(sx, sY, lz - d / 2 - 1);
-      g.add(pl);
+      const pl = new B.PointLight('spl' + buildingId, new B.Vector3(sx, sY, lz - d / 2 - 1.5), scene);
+      pl.diffuse = sC.clone(); pl.intensity = 0.4; pl.range = 12; pl.parent = root;
     }
   }
 
-  // secondary billboard
-  if (Math.random() > 0.5) {
-    const bW = ri(w * 0.3, w * 0.5), bH = ri(2, 5);
-    addAt(g, new THREE.PlaneGeometry(bW, bH), glow(rn(), ri(0.3, 0.7)),
-      lx + (Math.random() - 0.5) * w * 0.4, ri(5, h * 0.5), lz - d / 2 - 0.08);
+  // vertical strips
+  for (let i = 0, n = 1 + ri2(0, 3); i < n; i++) {
+    const vh = ri(h * 0.1, h * 0.45);
+    const vs = B.MeshBuilder.CreatePlane('vs', { width: ri(0.15, 0.35), height: vh }, scene);
+    vs.position.set(lx + (Math.random() - 0.5) * w * 0.65, ri(4, h - vh / 2), lz - d / 2 - 0.07);
+    vs.material = matGlow('vsm' + buildingId + i, Math.random() > 0.5 ? nc1 : nc2, ri(0.35, 0.75));
+    vs.parent = root;
   }
 
-  // vertical neon strips
-  for (let i = 0, n = 1 + ((Math.random() * 3) | 0); i < n; i++) {
-    const vh = ri(h * 0.1, h * 0.5);
-    addAt(g, new THREE.PlaneGeometry(ri(0.15, 0.35), vh), glow(Math.random() > 0.5 ? nc1 : nc2, ri(0.3, 0.7)),
-      lx + (Math.random() - 0.5) * w * 0.7, ri(4, h - vh / 2), lz - d / 2 - 0.07);
+  // horizontal bars
+  for (let i = 0, n = 1 + ri2(0, 3); i < n; i++) {
+    const hb = B.MeshBuilder.CreatePlane('hb', { width: ri(w * 0.3, w * 0.9), height: 0.12 }, scene);
+    hb.position.set(lx, ri(3, h - 1), lz - d / 2 - 0.07);
+    hb.material = matGlow('hbm' + buildingId + i, rn(), ri(0.25, 0.6));
+    hb.parent = root;
   }
 
-  // horizontal accent bars
-  for (let i = 0, n = 1 + ((Math.random() * 3) | 0); i < n; i++) {
-    addAt(g, new THREE.PlaneGeometry(ri(w * 0.3, w * 0.95), 0.12), glow(rn(), ri(0.2, 0.55)),
-      lx, ri(3, h - 1), lz - d / 2 - 0.07);
-  }
-
-  // storefront glow
-  addAt(g, new THREE.PlaneGeometry(w * ri(0.4, 0.9), 2.8), glow(rn(), ri(0.06, 0.18)),
-    lx, 1.6, lz - d / 2 - 0.08);
+  // storefront
+  const sf = B.MeshBuilder.CreatePlane('sf', { width: w * ri(0.4, 0.85), height: 2.8 }, scene);
+  sf.position.set(lx, 1.6, lz - d / 2 - 0.08);
+  sf.material = matGlow('sfm' + buildingId, rn(), ri(0.08, 0.2));
+  sf.parent = root;
 
   // awning
   if (Math.random() > 0.55) {
-    const awW = ri(3, w * 0.6);
-    const awX = lx + (Math.random() - 0.5) * w * 0.3;
-    addAt(g, new THREE.BoxGeometry(awW, 0.08, 1.5), mat(0x111122), awX, 3.5, lz - d / 2 - 0.8);
-    addAt(g, new THREE.BoxGeometry(awW, 0.05, 0.05), glow(rn(), 0.6), awX, 3.46, lz - d / 2 - 1.55);
+    const awW = ri(3, w * 0.55);
+    const aw = B.MeshBuilder.CreateBox('aw', { width: awW, height: 0.08, depth: 1.5 }, scene);
+    aw.position.set(lx + (Math.random() - 0.5) * w * 0.3, 3.5, lz - d / 2 - 0.8);
+    aw.material = matPBR('awm' + buildingId, [0.05, 0.05, 0.1], 0.4, 0.6); aw.parent = root;
+    const ae = B.MeshBuilder.CreateBox('ae', { width: awW, height: 0.05, depth: 0.05 }, scene);
+    ae.position.set(aw.position.x, 3.46, lz - d / 2 - 1.55);
+    ae.material = matGlow('aem' + buildingId, rn(), 0.7); ae.parent = root;
   }
 
-  return g;
+  return root;
 }
 
-// ═══════════════════════ CITY CHUNK ═══════════════════════
+// ═══════════════════ CITY CHUNK ═══════════════════
 function genChunk() {
-  const grp = new THREE.Group();
+  const root = new B.TransformNode('chunk' + (buildingId++), scene);
 
-  // buildings both sides
   [-1, 1].forEach(side => {
     let z = 0;
-    while (z < CHUNK) {
+    while (z < CK) {
       const bW = ri(7, 22);
-      const x = (ROAD_W / 2 + ri(2, 5) + bW / 2) * side;
-      grp.add(genBuilding(x, -z, bW));
-      // back-row building for depth
+      const x = (RW / 2 + ri(2, 5) + bW / 2) * side;
+      const b = genBuilding(x, -z, bW);
+      b.parent = root;
       if (Math.random() > 0.45) {
-        grp.add(genBuilding(
-          (ROAD_W / 2 + ri(18, 35) + ri(5, 12)) * side,
-          -z + ri(-3, 3), ri(8, 18), ri(25, 100)
-        ));
+        const b2 = genBuilding((RW / 2 + ri(18, 35) + ri(5, 12)) * side, -z + ri(-3, 3), ri(8, 18), ri(25, 100));
+        b2.parent = root;
       }
       z += bW + ri(0.5, 3);
     }
   });
 
   // street lights
-  for (let lz = 0; lz < CHUNK; lz += 12) {
+  for (let lz = 0; lz < CK; lz += 14) {
     [-1, 1].forEach(side => {
-      const x = (ROAD_W / 2 + 1.3) * side;
-      addAt(grp, new THREE.CylinderGeometry(0.05, 0.05, 7, 5), mat(0x1a1a2a), x, 3.5, -lz);
-      addAt(grp, new THREE.BoxGeometry(1.8, 0.05, 0.05), mat(0x1a1a2a), x - 0.9 * side, 7, -lz);
-      const lc = lz % 24 === 0 ? NC.cy : NC.pk;
-      addAt(grp, new THREE.SphereGeometry(0.14, 6, 6), glow(lc), x - 1.8 * side, 6.95, -lz);
-      const pl = new THREE.PointLight(lc, 0.5, 14);
-      pl.position.set(x - 1.8 * side, 6.9, -lz);
-      grp.add(pl);
+      const x = (RW / 2 + 1.3) * side;
+      const pole = B.MeshBuilder.CreateCylinder('pole', { diameter: 0.1, height: 7, tessellation: 5 }, scene);
+      pole.position.set(x, 3.5, -lz); pole.material = matPBR('pm', [0.08, 0.08, 0.14], 0.4, 0.5); pole.parent = root;
+
+      const arm = B.MeshBuilder.CreateBox('arm', { width: 1.8, height: 0.05, depth: 0.05 }, scene);
+      arm.position.set(x - 0.9 * side, 7, -lz); arm.material = pole.material; arm.parent = root;
+
+      const lc = lz % 28 === 0 ? new B.Color3(0, 1, 1) : new B.Color3(1, 0, 0.4);
+      const bulb = B.MeshBuilder.CreateSphere('bulb', { diameter: 0.28, segments: 6 }, scene);
+      bulb.position.set(x - 1.8 * side, 6.95, -lz);
+      bulb.material = matGlow('blbm' + lz + side, lc, 1); bulb.parent = root;
+
+      const pl = new B.PointLight('stl' + lz + side, new B.Vector3(x - 1.8 * side, 6.9, -lz), scene);
+      pl.diffuse = lc.clone(); pl.intensity = 0.6; pl.range = 16; pl.parent = root;
     });
   }
 
-  return grp;
+  return root;
 }
 
-// ═══════════════════════ ROAD CHUNK ═══════════════════════
+// ═══════════════════ ROAD CHUNK ═══════════════════
 function makeRoad() {
-  const sg = new THREE.Group();
+  const root = new B.TransformNode('road' + (buildingId++), scene);
 
-  // asphalt
-  const rd = addAt(sg, new THREE.PlaneGeometry(ROAD_W + 2, CHUNK),
-    new THREE.MeshStandardMaterial({ color: 0x0e0e1a, roughness: 0.6, metalness: 0.15 }), 0, 0.01, 0);
-  rd.rotation.x = -Math.PI / 2;
+  const rd = B.MeshBuilder.CreatePlane('rd', { width: RW + 2, height: CK }, scene);
+  rd.rotation.x = Math.PI / 2; rd.position.y = 0.01; rd.material = roadMat; rd.parent = root;
 
-  // wet reflection
-  const wt = addAt(sg, new THREE.PlaneGeometry(ROAD_W, CHUNK),
-    new THREE.MeshStandardMaterial({ color: 0x111122, roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.07 }), 0, 0.015, 0);
-  wt.rotation.x = -Math.PI / 2;
+  const wt = B.MeshBuilder.CreatePlane('wt', { width: RW, height: CK }, scene);
+  wt.rotation.x = Math.PI / 2; wt.position.y = 0.018; wt.material = roadWetMat; wt.parent = root;
 
-  // edge lines
-  [-LANES / 2, LANES / 2].forEach(i => {
-    const e = addAt(sg, new THREE.PlaneGeometry(0.16, CHUNK), glow(NC.cy, 0.85), i * LANE_W, 0.025, 0);
-    e.rotation.x = -Math.PI / 2;
-    const eg = addAt(sg, new THREE.PlaneGeometry(0.7, CHUNK), glow(NC.cy, 0.05), i * LANE_W, 0.02, 0);
-    eg.rotation.x = -Math.PI / 2;
+  [-LN / 2, LN / 2].forEach(i => {
+    const e = B.MeshBuilder.CreatePlane('e', { width: 0.16, height: CK }, scene);
+    e.rotation.x = Math.PI / 2; e.position.set(i * LW, 0.025, 0); e.material = edgeMat; e.parent = root;
+    const eg = B.MeshBuilder.CreatePlane('eg', { width: 0.7, height: CK }, scene);
+    eg.rotation.x = Math.PI / 2; eg.position.set(i * LW, 0.022, 0); eg.material = edgeGlowMat; eg.parent = root;
   });
 
-  // double yellow center
   [-0.12, 0.12].forEach(off => {
-    const cl = addAt(sg, new THREE.PlaneGeometry(0.07, CHUNK), glow(NC.yl, 0.65), off, 0.025, 0);
-    cl.rotation.x = -Math.PI / 2;
+    const cl = B.MeshBuilder.CreatePlane('cl', { width: 0.07, height: CK }, scene);
+    cl.rotation.x = Math.PI / 2; cl.position.set(off, 0.025, 0); cl.material = centerMat; cl.parent = root;
   });
-  const cg = addAt(sg, new THREE.PlaneGeometry(0.5, CHUNK), glow(NC.yl, 0.03), 0, 0.018, 0);
-  cg.rotation.x = -Math.PI / 2;
+  const cg = B.MeshBuilder.CreatePlane('cg', { width: 0.5, height: CK }, scene);
+  cg.rotation.x = Math.PI / 2; cg.position.set(0, 0.019, 0); cg.material = centerGlowMat; cg.parent = root;
 
-  // lane dashes
-  for (let lane = -LANES / 2 + 1; lane < LANES / 2; lane++) {
+  for (let lane = -LN / 2 + 1; lane < LN / 2; lane++) {
     if (lane === 0) continue;
-    for (let dz = -CHUNK / 2; dz < CHUNK / 2; dz += 7) {
-      const dash = addAt(sg, new THREE.PlaneGeometry(0.07, 3), glow(0x556677, 0.3), lane * LANE_W, 0.022, dz);
-      dash.rotation.x = -Math.PI / 2;
+    for (let dz = -CK / 2; dz < CK / 2; dz += 7) {
+      const d = B.MeshBuilder.CreatePlane('d', { width: 0.07, height: 3 }, scene);
+      d.rotation.x = Math.PI / 2; d.position.set(lane * LW, 0.023, dz); d.material = dashMat; d.parent = root;
     }
   }
 
-  return sg;
+  return root;
 }
 
-// ═══════════════════════ GAME STATE ═══════════════════════
-const state = {
-  spd: 0, px: 0, dist: 0, sc: 0,
-  alive: true, started: false,
-  shk: 0, str: 0, spawnT: 0,
-};
+// ═══════════════════ CREATE WORLD ═══════════════════
+const player = buildCar(true);
 
-const settings = {
-  traffic: 0.55,
-  weather: 'clear',
-  tod: 'night',
-  auto: false,
-};
-
-const keys = {};
-
-// ═══════════════════════ DOM REFS ═══════════════════════
-const $ = id => document.getElementById(id);
-const startScreen = $('start-screen');
-const crashScreen = $('crash-screen');
-const hud = $('hud');
-const speedVal = $('speed-val');
-const scoreVal = $('score-val');
-const finalScore = $('final-score');
-const speedBarFill = $('speed-bar-fill');
-const autoBtn = $('auto-btn');
-const autoBadge = $('autopilot-badge');
-const helpOverlay = $('help-overlay');
-const settingsOverlay = $('settings-overlay');
-const trafficSlider = $('traffic-slider');
-const trafficVal = $('traffic-val');
-
-// chip builders
-function buildChips(containerId, options, settingKey, colorClass) {
-  const container = $(containerId);
-  container.innerHTML = '';
-  options.forEach(opt => {
-    const btn = document.createElement('button');
-    btn.className = 'chip' + (settings[settingKey] === opt ? (' ' + colorClass) : '');
-    btn.textContent = opt;
-    btn.addEventListener('click', () => {
-      settings[settingKey] = opt;
-      buildChips(containerId, options, settingKey, colorClass);
-    });
-    container.appendChild(btn);
-  });
+const roadChunks = [];
+const cityChunks = [];
+for (let i = 0; i < NCK; i++) {
+  const r = makeRoad(); r.position.z = -i * CK; roadChunks.push({ root: r, idx: i });
+  const c = genChunk(); c.position.z = -i * CK; cityChunks.push({ root: c, idx: i });
 }
 
-buildChips('weather-chips', ['clear', 'rain', 'fog', 'storm'], 'weather', 'active-cyan');
-buildChips('tod-chips', ['night', 'dawn', 'sunset', 'day'], 'tod', 'active-pink');
-buildChips('auto-chips', ['off', 'on'], 'auto', 'active-green');
-// fix auto chips to use boolean
-$('auto-chips').addEventListener('click', e => {
-  if (e.target.classList.contains('chip')) {
-    settings.auto = e.target.textContent === 'on';
-    updateAutoUI();
-    buildChips('auto-chips', ['off', 'on'], 'auto', 'active-green');
-    // fix: settings.auto is boolean but chip checks string
-  }
-});
-
-function updateAutoUI() {
-  autoBtn.textContent = settings.auto ? 'auto: on' : 'auto: off';
-  autoBtn.classList.toggle('on', settings.auto);
-  autoBadge.classList.toggle('show', settings.auto && state.alive);
-}
-
-// events
-$('start-btn').addEventListener('click', startGame);
-$('retry-btn').addEventListener('click', startGame);
-autoBtn.addEventListener('click', () => {
-  settings.auto = !settings.auto;
-  updateAutoUI();
-  // rebuild auto chips
-  const autoChips = $('auto-chips');
-  autoChips.querySelectorAll('.chip').forEach(c => {
-    c.classList.remove('active-green');
-    if ((c.textContent === 'on') === settings.auto) c.classList.add('active-green');
-  });
-});
-$('help-btn').addEventListener('click', () => helpOverlay.classList.toggle('show'));
-$('settings-btn').addEventListener('click', () => {
-  settingsOverlay.classList.toggle('show');
-  buildChips('weather-chips', ['clear', 'rain', 'fog', 'storm'], 'weather', 'active-cyan');
-  buildChips('tod-chips', ['night', 'dawn', 'sunset', 'day'], 'tod', 'active-pink');
-  // handle auto chips manually since it's boolean
-  const autoChips = $('auto-chips');
-  autoChips.innerHTML = '';
-  ['off', 'on'].forEach(opt => {
-    const btn = document.createElement('button');
-    btn.className = 'chip' + ((settings.auto === (opt === 'on')) ? ' active-green' : '');
-    btn.textContent = opt;
-    btn.addEventListener('click', () => {
-      settings.auto = opt === 'on';
-      updateAutoUI();
-      // refresh
-      $('settings-btn').click();
-    });
-    autoChips.appendChild(btn);
-  });
-});
-helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.remove('show'); });
-settingsOverlay.addEventListener('click', e => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('show'); });
-
-trafficSlider.addEventListener('input', e => {
-  settings.traffic = parseFloat(e.target.value);
-  trafficVal.textContent = Math.round(settings.traffic * 100) + '%';
-});
-
-window.addEventListener('keydown', e => {
-  keys[e.key.toLowerCase()] = true;
-  if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(e.key.toLowerCase())) {
-    e.preventDefault();
-  }
-});
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-
-// ═══════════════════════ THREE.JS SETUP ═══════════════════════
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
-document.body.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x040410);
-scene.fog = new THREE.FogExp2(0x040410, 0.006);
-
-const camera = new THREE.PerspectiveCamera(66, window.innerWidth / window.innerHeight, 0.5, 600);
-
-const amb = new THREE.AmbientLight(0x222244, 0.35);
-scene.add(amb);
-const dirLight = new THREE.DirectionalLight(0x6666aa, 0.25);
-dirLight.position.set(20, 50, -30);
-scene.add(dirLight);
-
-// ground
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(600, 4000),
-  new THREE.MeshStandardMaterial({ color: 0x060610, roughness: 0.95 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = -0.05;
-scene.add(ground);
-
-// road chunks
-const roads = [];
-for (let i = 0; i < NCHUNKS; i++) {
-  const road = makeRoad();
-  road.position.z = -i * CHUNK;
-  scene.add(road);
-  roads.push({ mesh: road, idx: i });
-}
-
-// city chunks
-const cities = [];
-for (let i = 0; i < NCHUNKS; i++) {
-  const city = genChunk();
-  city.position.z = -i * CHUNK;
-  scene.add(city);
-  cities.push({ mesh: city, idx: i });
-}
-
-// player car
-const pcar = buildCar(true);
-scene.add(pcar);
-
-// traffic pool
-const traffic = [];
+const trafficPool = [];
 for (let i = 0; i < MTRAF; i++) {
-  const m = buildCar(false);
-  m.visible = false;
-  scene.add(m);
-  traffic.push({ mesh: m, active: false, lane: 0, speed: 0, z: 0, x: 0, dir: 1 });
+  const m = buildCar(false); m.setEnabled(false);
+  trafficPool.push({ root: m, active: false, lane: 0, speed: 0, z: 0, x: 0, dir: 1 });
 }
 
-// rain
-const rainGeo = new THREE.BufferGeometry();
-const rainArr = new Float32Array(RC * 3);
-for (let i = 0; i < RC; i++) {
-  rainArr[i * 3] = (Math.random() - 0.5) * 160;
-  rainArr[i * 3 + 1] = Math.random() * 70;
-  rainArr[i * 3 + 2] = (Math.random() - 0.5) * 300;
-}
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainArr, 3));
-const rainMat = new THREE.PointsMaterial({ color: 0x8899cc, size: 0.06, transparent: true, opacity: 0.5 });
-const rain = new THREE.Points(rainGeo, rainMat);
-rain.visible = false;
-scene.add(rain);
+// ═══════════════════ RAIN PARTICLES ═══════════════════
+// procedural particle texture
+const pTex = new B.DynamicTexture('pTex', 16, scene, false);
+const pCtx = pTex.getContext();
+const grad = pCtx.createRadialGradient(8, 8, 0, 8, 8, 8);
+grad.addColorStop(0, 'rgba(255,255,255,1)');
+grad.addColorStop(1, 'rgba(255,255,255,0)');
+pCtx.fillStyle = grad;
+pCtx.fillRect(0, 0, 16, 16);
+pTex.update();
 
-// resize
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+const rainSys = new B.ParticleSystem('rain', 5000, scene);
+rainSys.particleTexture = pTex;
+rainSys.createBoxEmitter(
+  new B.Vector3(-0.1, -1, -0.1), new B.Vector3(0.1, -1, 0.1),
+  new B.Vector3(-80, 60, -150), new B.Vector3(80, 65, 50)
+);
+rainSys.minSize = 0.02; rainSys.maxSize = 0.05;
+rainSys.minLifeTime = 0.5; rainSys.maxLifeTime = 1.2;
+rainSys.emitRate = 4000;
+rainSys.gravity = new B.Vector3(0, -90, 0);
+rainSys.color1 = new B.Color4(0.5, 0.6, 0.8, 0.6);
+rainSys.color2 = new B.Color4(0.4, 0.5, 0.7, 0.3);
+rainSys.blendMode = B.ParticleSystem.BLENDMODE_ADD;
+// create a tiny invisible emitter mesh
+const rainEmitter = B.MeshBuilder.CreateBox('re', { size: 0.01 }, scene);
+rainEmitter.isVisible = false;
+rainSys.emitter = rainEmitter;
+rainSys.stop();
+let rainOn = false;
 
-// ═══════════════════════ GAME FUNCTIONS ═══════════════════════
-function startGame() {
-  state.spd = 0; state.px = 0; state.dist = 0; state.sc = 0;
-  state.alive = true; state.started = true;
-  state.shk = 0; state.str = 0; state.spawnT = 0;
-  traffic.forEach(t => { t.mesh.visible = false; t.active = false; });
-  startScreen.classList.add('hidden');
-  crashScreen.classList.remove('show');
-  hud.classList.add('show');
-  updateAutoUI();
-}
-
-function doCrash() {
-  state.alive = false;
-  state.shk = 1.2;
-  finalScore.textContent = Math.floor(state.sc).toLocaleString();
-  crashScreen.classList.add('show');
-  autoBadge.classList.remove('show');
-}
-
-function spawnTraffic() {
-  let actN = 0;
-  traffic.forEach(t => { if (t.active) actN++; });
-  if (actN >= Math.floor(MTRAF * settings.traffic)) return;
-  const car = traffic.find(t => !t.active);
-  if (!car) return;
-  const lI = ((Math.random() * LANES) | 0) - LANES / 2 + 0.5;
-  car.lane = lI;
-  car.x = lI * LANE_W;
-  car.dir = lI > 0 ? 1 : -1;
+// ═══════════════════ TRAFFIC ═══════════════════
+function spawnT() {
+  let an = 0; trafficPool.forEach(t => { if (t.active) an++; });
+  if (an >= Math.floor(MTRAF * cfg.traffic)) return;
+  const car = trafficPool.find(t => !t.active); if (!car) return;
+  const lI = ri2(0, LN) - LN / 2 + 0.5;
+  car.lane = lI; car.x = lI * LW; car.dir = lI > 0 ? 1 : -1;
   car.speed = 35 + Math.random() * 40;
-  car.z = pcar.position.z - (100 + Math.random() * 200);
-  car.active = true;
-  car.mesh.visible = true;
-  car.mesh.position.set(car.x, 0, car.z);
-  car.mesh.rotation.y = car.dir > 0 ? Math.PI : 0;
+  car.z = player.position.z - (100 + Math.random() * 200);
+  car.active = true; car.root.setEnabled(true);
+  car.root.position.set(car.x, 0, car.z);
+  car.root.rotation.y = car.dir > 0 ? Math.PI : 0;
 }
 
-function updateTraffic(dt) {
-  const pz = pcar.position.z;
-  traffic.forEach(car => {
+function updTraf(dt) {
+  const pz = player.position.z;
+  trafficPool.forEach(car => {
     if (!car.active) return;
-    const ms = state.spd * 0.27778;
-    const cs = car.speed * 0.27778;
+    const ms = S.spd * 0.27778, cs = car.speed * 0.27778;
     car.z += (car.dir > 0 ? -(ms + cs) : -(ms - cs)) * dt;
-    car.mesh.position.z = car.z;
-    car.mesh.position.x = car.x;
+    car.root.position.z = car.z;
+    car.root.position.x = car.x;
     const dz = car.z - pz;
-    if (dz > 70 || dz < -350) { car.active = false; car.mesh.visible = false; }
+    if (dz > 70 || dz < -350) { car.active = false; car.root.setEnabled(false); }
   });
 }
 
-function checkCollisions() {
-  if (!state.alive) return;
-  if (Math.abs(state.px) > ROAD_W / 2 - 0.8) { doCrash(); return; }
-  const pz = pcar.position.z;
-  for (let i = 0; i < traffic.length; i++) {
-    const car = traffic[i];
-    if (!car.active) continue;
-    if (Math.abs(state.px - car.x) < 1.85 && Math.abs(pz - car.z) < 3.8) { doCrash(); return; }
+function chkCol() {
+  if (!S.alive) return;
+  if (Math.abs(S.px) > RW / 2 - 0.8) { doCrash(); return; }
+  const pz = player.position.z;
+  for (let i = 0; i < trafficPool.length; i++) {
+    const c = trafficPool[i];
+    if (!c.active) continue;
+    if (Math.abs(S.px - c.x) < 1.85 && Math.abs(pz - c.z) < 3.8) { doCrash(); return; }
   }
 }
 
-function autoDrive(dt) {
+function autoD(dt) {
   let tx = 0, cD = 9999, cC = null;
-  const pz = pcar.position.z;
-  traffic.forEach(car => {
-    if (!car.active) return;
-    const dz = car.z - pz;
-    if (dz < 8 && dz > -50 && Math.abs(state.px - car.x) < 5) {
-      const d = Math.abs(dz);
-      if (d < cD) { cD = d; cC = car; }
+  const pz = player.position.z;
+  trafficPool.forEach(c => {
+    if (!c.active) return;
+    const dz = c.z - pz;
+    if (dz < 8 && dz > -50 && Math.abs(S.px - c.x) < 5) {
+      const d = Math.abs(dz); if (d < cD) { cD = d; cC = c; }
     }
   });
   if (cC) {
-    const dodge = cC.x > state.px ? -1 : 1;
-    tx = cC.x + dodge * LANE_W * 1.8;
-    tx = Math.max(-ROAD_W / 2 + 2, Math.min(ROAD_W / 2 - 2, tx));
+    const dodge = cC.x > S.px ? -1 : 1;
+    tx = cC.x + dodge * LW * 1.8;
+    tx = Math.max(-RW / 2 + 2, Math.min(RW / 2 - 2, tx));
   }
-  const ss = Math.max(-1, Math.min(1, (tx - state.px) * 0.3));
-  state.str += (ss * 0.45 - state.str) * dt * 4;
-  state.px += state.str * STR * Math.min(state.spd / 60, 1) * dt * 15;
-  state.spd = Math.min(state.spd + ACC * 0.7 * dt, MSPD * 0.65);
+  const ss = Math.max(-1, Math.min(1, (tx - S.px) * 0.3));
+  S.str += (ss * 0.45 - S.str) * dt * 4;
+  S.px += S.str * STF * Math.min(S.spd / 60, 1) * dt * 15;
+  S.spd = Math.min(S.spd + ACC * 0.7 * dt, MSPD * 0.65);
 }
 
+// ═══════════════════ ENVIRONMENT ═══════════════════
 function applyEnv() {
-  rain.visible = settings.weather === 'rain' || settings.weather === 'storm';
-  if (settings.weather === 'rain') { scene.fog = new THREE.FogExp2(0x030308, 0.012); rainMat.opacity = 0.5; }
-  else if (settings.weather === 'storm') { scene.fog = new THREE.FogExp2(0x020206, 0.016); rainMat.opacity = 0.75; }
-  else if (settings.weather === 'fog') { scene.fog = new THREE.FogExp2(0x12122a, 0.022); }
-  else { scene.fog = new THREE.FogExp2(0x040410, 0.006); }
+  const isRain = cfg.weather === 'rain' || cfg.weather === 'storm';
+  if (isRain && !rainOn) { rainSys.start(); rainOn = true; }
+  else if (!isRain && rainOn) { rainSys.stop(); rainOn = false; }
 
-  if (settings.tod === 'night') {
-    amb.intensity = 0.35; amb.color.set(0x222244);
-    dirLight.intensity = 0.15; dirLight.color.set(0x6666aa);
-    renderer.toneMappingExposure = 0.9; scene.background.set(0x040410);
-  } else if (settings.tod === 'sunset') {
-    amb.intensity = 0.48; amb.color.set(0x553322);
-    dirLight.intensity = 0.5; dirLight.color.set(0xff6633);
-    renderer.toneMappingExposure = 1.1; scene.background.set(0x1a0f15);
-  } else if (settings.tod === 'dawn') {
-    amb.intensity = 0.42; amb.color.set(0x334455);
-    dirLight.intensity = 0.4; dirLight.color.set(0x6688bb);
-    renderer.toneMappingExposure = 1.0; scene.background.set(0x0f1520);
+  if (cfg.weather === 'rain') { scene.fogDensity = 0.012; rainSys.emitRate = 3000; }
+  else if (cfg.weather === 'storm') { scene.fogDensity = 0.016; rainSys.emitRate = 5000; }
+  else if (cfg.weather === 'fog') { scene.fogDensity = 0.025; }
+  else { scene.fogDensity = 0.006; }
+
+  if (cfg.tod === 'night') {
+    hemi.intensity = 0.3; hemi.diffuse.set(0.12, 0.1, 0.22);
+    dirL.intensity = 0.15; dirL.diffuse.set(0.3, 0.3, 0.5);
+    pp.imageProcessing.exposure = 0.95;
+    scene.clearColor.set(0.016, 0.012, 0.03, 1);
+    scene.fogColor.set(0.016, 0.012, 0.03);
+    glow.intensity = 0.9;
+  } else if (cfg.tod === 'sunset') {
+    hemi.intensity = 0.45; hemi.diffuse.set(0.35, 0.2, 0.15);
+    dirL.intensity = 0.5; dirL.diffuse.set(1, 0.4, 0.2);
+    pp.imageProcessing.exposure = 1.15;
+    scene.clearColor.set(0.1, 0.06, 0.08, 1);
+    scene.fogColor.set(0.1, 0.06, 0.08);
+    glow.intensity = 0.6;
+  } else if (cfg.tod === 'dawn') {
+    hemi.intensity = 0.4; hemi.diffuse.set(0.2, 0.25, 0.35);
+    dirL.intensity = 0.4; dirL.diffuse.set(0.4, 0.55, 0.7);
+    pp.imageProcessing.exposure = 1.05;
+    scene.clearColor.set(0.06, 0.08, 0.12, 1);
+    scene.fogColor.set(0.06, 0.08, 0.12);
+    glow.intensity = 0.7;
   } else {
-    amb.intensity = 0.6; amb.color.set(0x8899aa);
-    dirLight.intensity = 0.65; dirLight.color.set(0xaabbcc);
-    renderer.toneMappingExposure = 1.3; scene.background.set(0x1a1a2e);
+    hemi.intensity = 0.6; hemi.diffuse.set(0.5, 0.5, 0.6);
+    dirL.intensity = 0.6; dirL.diffuse.set(0.65, 0.65, 0.7);
+    pp.imageProcessing.exposure = 1.35;
+    scene.clearColor.set(0.1, 0.1, 0.17, 1);
+    scene.fogColor.set(0.1, 0.1, 0.17);
+    glow.intensity = 0.4;
   }
 }
 
-// ═══════════════════════ GAME LOOP ═══════════════════════
+// ═══════════════════ GAME LOOP ═══════════════════
 let prev = performance.now();
 
-function tick(now) {
-  requestAnimationFrame(tick);
+scene.registerBeforeRender(() => {
+  const now = performance.now();
   const dt = Math.min((now - prev) / 1000, 0.05);
   prev = now;
 
   applyEnv();
 
-  if (!state.started) {
-    // idle camera
-    camera.position.set(0, 5, 12);
-    camera.lookAt(0, 2, -30);
-    renderer.render(scene, camera);
+  if (!S.started) {
+    cam.position.set(0, 5, 14);
+    cam.setTarget(new B.Vector3(0, 2, -30));
     return;
   }
 
-  if (state.alive) {
-    if (settings.auto) {
-      autoDrive(dt);
+  if (S.alive) {
+    if (cfg.auto) {
+      autoD(dt);
     } else {
-      if (keys['w'] || keys['arrowup']) state.spd = Math.min(state.spd + ACC * dt, MSPD);
-      else if (keys['s'] || keys['arrowdown']) state.spd = Math.max(state.spd - BRK * dt, -10);
-      else { state.spd = state.spd > 0 ? Math.max(state.spd - DRG * dt, 0) : Math.min(state.spd + DRG * dt, 0); }
-      if (keys['shift'] || keys[' ']) state.spd = Math.min(state.spd + ACC * 1.6 * dt, MSPD * 1.15);
-
+      if (keys['w'] || keys['arrowup']) S.spd = Math.min(S.spd + ACC * dt, MSPD);
+      else if (keys['s'] || keys['arrowdown']) S.spd = Math.max(S.spd - BRK * dt, -10);
+      else { S.spd = S.spd > 0 ? Math.max(S.spd - DRG * dt, 0) : Math.min(S.spd + DRG * dt, 0); }
+      if (keys['shift'] || keys[' ']) S.spd = Math.min(S.spd + ACC * 1.6 * dt, MSPD * 1.15);
       const si = (keys['a'] || keys['arrowleft']) ? 1 : (keys['d'] || keys['arrowright']) ? -1 : 0;
-      state.str += (si * 0.5 - state.str) * dt * 5;
-      state.px += state.str * STR * Math.min(state.spd / 60, 1) * dt * 15;
+      S.str += (si * 0.5 - S.str) * dt * 5;
+      S.px += S.str * STF * Math.min(S.spd / 60, 1) * dt * 15;
     }
 
-    state.dist += state.spd * 0.27778 * dt;
-    state.sc += state.spd * dt * 0.12;
+    S.dist += S.spd * 0.27778 * dt;
+    S.sc += S.spd * dt * 0.12;
 
-    state.spawnT -= dt;
-    if (state.spawnT <= 0) {
-      spawnTraffic();
-      state.spawnT = (0.25 + Math.random() * 0.95) / Math.max(settings.traffic, 0.1);
-    }
+    S.spT -= dt;
+    if (S.spT <= 0) { spawnT(); S.spT = (0.25 + Math.random() * 0.95) / Math.max(cfg.traffic, 0.1); }
 
-    updateTraffic(dt);
-    checkCollisions();
+    updTraf(dt);
+    chkCol();
 
-    pcar.position.x = state.px;
-    pcar.rotation.y = state.str * 0.12;
+    player.position.x = S.px;
+    player.rotation.y = S.str * 0.12;
 
-    // update HUD
-    const spdDisplay = Math.abs(Math.round(state.spd));
-    speedVal.textContent = spdDisplay;
-    scoreVal.textContent = Math.floor(state.sc).toLocaleString();
-    const pct = Math.min(spdDisplay / MSPD * 100, 100);
-    speedBarFill.style.width = pct + '%';
-    speedBarFill.classList.toggle('hot', spdDisplay > MSPD * 0.85);
+    const sv = Math.abs(Math.round(S.spd));
+    spdNum.textContent = sv;
+    scNum.textContent = Math.floor(S.sc).toLocaleString();
+    spdFill.style.width = Math.min(sv / MSPD * 100, 100) + '%';
+    spdFill.classList.toggle('hot', sv > MSPD * 0.85);
   } else {
-    state.spd *= (1 - dt * 3);
-    updateTraffic(dt);
+    S.spd *= (1 - dt * 3);
+    updTraf(dt);
   }
 
   // ── INFINITE SCROLL ──
-  const cwz = -state.dist;
+  const cwz = -S.dist;
 
-  roads.forEach(ch => {
-    let base = -ch.idx * CHUNK;
-    let cycle = Math.floor(state.dist / WLEN);
-    let z = base + cycle * WLEN;
-    let rel = z + state.dist;
-    if (rel > CHUNK * 1.5) z -= WLEN;
-    if (rel < -WLEN + CHUNK) z += WLEN;
-    ch.mesh.position.z = z;
+  roadChunks.forEach(ch => {
+    let base = -ch.idx * CK;
+    let cycle = Math.floor(S.dist / WL);
+    let z = base + cycle * WL;
+    if (z + S.dist > CK * 1.5) z -= WL;
+    if (z + S.dist < -WL + CK) z += WL;
+    ch.root.position.z = z;
   });
 
-  cities.forEach(ch => {
-    let base = -ch.idx * CHUNK;
-    let cycle = Math.floor(state.dist / WLEN);
-    let z = base + cycle * WLEN;
-    let rel = z + state.dist;
-    if (rel > CHUNK * 1.5) {
-      z -= WLEN;
-      // recycle chunk
-      scene.remove(ch.mesh);
-      ch.mesh.traverse(c => {
-        if (c.isMesh) {
-          if (c.geometry) c.geometry.dispose();
-          if (c.material) {
-            if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
-            else c.material.dispose();
-          }
-        }
+  cityChunks.forEach(ch => {
+    let base = -ch.idx * CK;
+    let cycle = Math.floor(S.dist / WL);
+    let z = base + cycle * WL;
+    let rel = z + S.dist;
+    if (rel > CK * 1.5) {
+      z -= WL;
+      // dispose and regenerate
+      ch.root.getChildren(undefined, false).forEach(child => {
+        child.getChildMeshes().forEach(m => { m.material?.dispose(); m.dispose(); });
+        if (child.dispose) child.dispose();
       });
+      ch.root.dispose();
       const fresh = genChunk();
-      scene.add(fresh);
-      ch.mesh = fresh;
-      rel = z + state.dist;
+      ch.root = fresh;
+      rel = z + S.dist;
     }
-    if (rel < -WLEN + CHUNK) z += WLEN;
-    ch.mesh.position.z = z;
+    if (rel < -WL + CK) z += WL;
+    ch.root.position.z = z;
   });
 
-  ground.position.z = cwz - 800;
+  gnd.position.z = cwz - 800;
 
-  // rain update
-  if (rain.visible) {
-    const p = rain.geometry.attributes.position.array;
-    for (let i = 0; i < RC; i++) {
-      p[i * 3 + 1] -= dt * (95 + Math.random() * 55);
-      if (p[i * 3 + 1] < -1) {
-        p[i * 3 + 1] = 65 + Math.random() * 10;
-        p[i * 3] = state.px + (Math.random() - 0.5) * 160;
-        p[i * 3 + 2] = cwz + (Math.random() - 0.5) * 300;
-      }
-    }
-    rain.geometry.attributes.position.needsUpdate = true;
+  // rain follows player
+  if (rainOn) {
+    rainEmitter.position.set(S.px, 40, cwz - 50);
   }
 
   // camera
   let sx = 0, sy = 0;
-  if (state.shk > 0) {
-    sx = (Math.random() - 0.5) * state.shk;
-    sy = (Math.random() - 0.5) * state.shk * 0.5;
-    state.shk *= (1 - dt * 5);
+  if (S.shk > 0) {
+    sx = (Math.random() - 0.5) * S.shk * 0.8;
+    sy = (Math.random() - 0.5) * S.shk * 0.4;
+    S.shk *= (1 - dt * 5);
   }
 
-  const tgtPos = new THREE.Vector3(
-    state.px * 0.5 + sx,
-    3.6 + state.spd * 0.009 + sy,
-    cwz + 10 + Math.min(state.spd * 0.022, 3.5)
-  );
-  camera.position.lerp(tgtPos, dt * 4.5);
-  camera.lookAt(new THREE.Vector3(state.px * 0.2, 1.2, cwz - 30 - state.spd * 0.3));
-  camera.fov += (66 + state.spd * 0.09 - camera.fov) * dt * 3;
-  camera.updateProjectionMatrix();
+  const tgtX = S.px * 0.5 + sx;
+  const tgtY = 3.6 + S.spd * 0.009 + sy;
+  const tgtZ = cwz + 10 + Math.min(S.spd * 0.022, 3.5);
+  cam.position.x += (tgtX - cam.position.x) * dt * 4.5;
+  cam.position.y += (tgtY - cam.position.y) * dt * 4.5;
+  cam.position.z += (tgtZ - cam.position.z) * dt * 4.5;
+  cam.setTarget(new B.Vector3(S.px * 0.2, 1.2, cwz - 30 - S.spd * 0.3));
 
-  renderer.render(scene, camera);
-}
+  const tgtFov = 1.15 + S.spd * 0.0015;
+  cam.fov += (tgtFov - cam.fov) * dt * 3;
+});
 
-requestAnimationFrame(tick);
+// resize
+window.addEventListener('resize', () => engine.resize());
+
+// run
+engine.runRenderLoop(() => scene.render());
